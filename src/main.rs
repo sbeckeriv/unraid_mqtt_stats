@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use std::time::Duration;
+use tracing::debug;
 use tracing_subscriber::{fmt, EnvFilter};
 
 mod cli;
@@ -26,7 +27,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let stats = UnraidStats::new(&args).await?;
     if let Some(dump_path) = &args.sensor_dump {
-        println!("Dumping sensor data to file: {}", dump_path.display());
+        debug!("Dumping sensor data to file: {}", dump_path.display());
         stats.dump_sensors_toml(dump_path).await?;
     } else if args.json_output {
         stats.publish_discovery(None).await?;
@@ -38,16 +39,16 @@ async fn main() -> Result<()> {
         tokio::spawn(async move { while let Ok(_) = eventloop.poll().await {} });
 
         if !args.skip_discovery {
-            println!("Publishing Home Assistant discovery messages...");
+            debug!("Publishing Home Assistant discovery messages...");
             stats.publish_discovery(Some(&client)).await?;
         }
 
-        println!("Publishing system stats...");
+        debug!("Publishing stats...");
         stats.publish_stats(Some(&client)).await?;
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        println!("Stats published successfully!");
+        debug!("Stats published successfully!");
     }
 
     Ok(())
