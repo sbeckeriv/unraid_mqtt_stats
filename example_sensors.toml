@@ -1,0 +1,37 @@
+# Override built in sensors. 
+# name_*_sensor pattern applies to all sensors with the name matching the pattern.
+# however it is not regex but a split on '_' with first and last. 
+# as i write this out it is only useful for dockercontainer sensors right now.
+# these 3 lines disable docker container sensors
+[sensors."dockercontainer_*_memory"]
+type = "override"
+disabled = true
+[sensors."dockercontainer_*_cpu"]
+disabled = true
+type = "override"
+[sensors."dockercontainer_*_status"]
+type = "override"
+disabled = true
+
+[sensors.docker_images_count]
+type = "override"
+icon = "not_docker"
+
+# Add in a custom sensor from command line output.
+[sensors.cpu_thermal_temp]
+type = "command"
+name = "CPU Temperature"
+unit = "°C"
+device_class = "temperature"
+icon = "mdi:cpu-64-bit"
+disabled = true
+command = "tail"
+args = ["-n 1", "/sys/class/thermal/thermal_zone0/temp"]
+post_process = "ParseFloat"
+# Post process functions:
+# TrimWhitespace
+# ParseFloat
+# ParseInteger
+# ExtractNumber (removes all non-numeric characters)
+# ToUpperCase
+# ToLowerCase
