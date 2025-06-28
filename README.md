@@ -1,6 +1,8 @@
 # unraid-mqtt-stats
 Gather stats off of unraid server 
 
+It works but its a work in progress. I am still trying to figure out the best settings for home assistant for values. Also how best to gather stats and what stats should be gathered.
+
 # Building on Unraid server
 ```
 git clone .. 

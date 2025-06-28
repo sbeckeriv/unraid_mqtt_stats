@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use sysinfo::System;
 use tokio::sync::Mutex;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 #[derive(Debug)]
 pub struct UnraidStats {
@@ -169,7 +169,7 @@ impl UnraidStats {
                     args: Some(vec!["/mnt/user".to_string()]),
                     transform: Some(Arc::new(|s: &str| {
                         if let Some(disk_info) = parse_disk_usage(&s) {
-                            dbg!(&disk_info);
+                            debug!("Disk info: {:?}", disk_info);
                             Some(disk_info.total.to_string())
                         } else {
                             None
@@ -276,6 +276,7 @@ impl UnraidStats {
                 id: "docker_images_size".to_string(),
                 name: "Docker Images Size".to_string(),
                 icon: Some("data_size".to_string()),
+                device_class: Some(DeviceClass::DataSize),
                 unit: Some("B".to_string()),
                 reporter: Some(SensorReporterType::Docker(DockerSensorReporter {
                     stat: DockerSensorReporterStat::ImagesSize,
@@ -357,7 +358,7 @@ impl UnraidStats {
             let sensor_topic = sensor.sensor_topic(&node_id);
             if let Some(mut source) = sensor.reporter {
                 if let Some(value) = source.get_value().await {
-                    dbg!(&sensor.id, &value);
+                    debug!("Sensor ID: {}, Value: {}", sensor.id, value);
                     self.publish_ha_state(client, &sensor_topic, value).await?;
                 }
             }
@@ -494,15 +495,11 @@ struct DiskInfo {
 
 fn parse_disk_usage(df_output: &str) -> Option<DiskInfo> {
     df_output.lines().skip(1).next().and_then(|line| {
-        //shfs           47420285M 25830858M 21589428M  55% /mnt/user
-        dbg!(&line);
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 5 {
-            dbg!(&parts);
             let usage_str = parts[4].trim_end_matches('%');
 
             let usage_percent = usage_str.parse::<f64>().ok()?;
-            dbg!(&usage_percent, usage_str);
             Some(DiskInfo {
                 total: parts[1].to_string(),
                 available: parts[3].to_string(),
