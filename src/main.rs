@@ -6,6 +6,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 mod cli;
 mod config;
+mod docker_stats;
 mod mqtt_config;
 mod unraid_stats;
 use crate::cli::Args;

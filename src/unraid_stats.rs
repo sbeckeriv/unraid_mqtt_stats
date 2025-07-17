@@ -1,12 +1,10 @@
 use crate::cli::Args;
 use crate::config::{
-    self, CommandSensorReporter, Config, DeviceClass, DockerContainerSensorReporter,
-    DockerContainerSensorReporterStat, DockerSensorReporter, DockerSensorReporterStat, Sensor,
-    SensorReporterType, Sensors, SensorsDump, SystemSensorReporter, SystemSensorReporterStat,
+    self, CommandSensorReporter, Config, DeviceClass, Sensor, SensorReporterType, Sensors,
+    SensorsDump, SystemSensorReporter, SystemSensorReporterStat,
 };
+use crate::docker_stats::{self, container_sensor_list};
 use anyhow::Result;
-use bollard::query_parameters::ListContainersOptions;
-use bollard::secret::ContainerSummary;
 use bollard::Docker;
 use rumqttc::{AsyncClient, QoS};
 use serde_json::json;
@@ -15,7 +13,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use sysinfo::System;
-use tokio::sync::Mutex;
 use tracing::{debug, instrument};
 
 #[derive(Debug)]
@@ -85,13 +82,10 @@ impl UnraidStats {
     }
 
     pub async fn sensors(&self) -> Vec<Sensor> {
-        let mut containters = self
-            .containers()
+        let mut containters = container_sensor_list(&self.docker, &self.device_name)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|container| self.container_sensors(container))
-            .collect::<Vec<Sensor>>();
+            .unwrap_or_default();
+        let mut docker = docker_stats::sensor_list(&self.docker).await;
 
         let mut sys = System::new_all();
         sys.refresh_all();
@@ -242,88 +236,38 @@ impl UnraidStats {
                 })),
                 ..Default::default()
             },
-            Sensor {
-                id: "docker_containers_running".to_string(),
-                name: "Docker Containers Running".to_string(),
-                icon: Some("docker".to_string()),
-                reporter: Some(SensorReporterType::Docker(DockerSensorReporter {
-                    stat: DockerSensorReporterStat::RunningCount,
-                    docker: Arc::new(self.docker.clone()),
-                })),
-                ..Default::default()
-            },
-            Sensor {
-                id: "docker_containers_unhealthy".to_string(),
-                name: "Docker Containers Unhealthy".to_string(),
-                icon: Some("docker".to_string()),
-                reporter: Some(SensorReporterType::Docker(DockerSensorReporter {
-                    stat: DockerSensorReporterStat::UnhealthyCount,
-                    docker: Arc::new(self.docker.clone()),
-                })),
-                ..Default::default()
-            },
-            Sensor {
-                id: "docker_images_count".to_string(),
-                name: "Docker Images".to_string(),
-                icon: Some("docker".to_string()),
-                reporter: Some(SensorReporterType::Docker(DockerSensorReporter {
-                    stat: DockerSensorReporterStat::ImagesCount,
-                    docker: Arc::new(self.docker.clone()),
-                })),
-                ..Default::default()
-            },
-            Sensor {
-                id: "docker_images_size".to_string(),
-                name: "Docker Images Size".to_string(),
-                icon: Some("data_size".to_string()),
-                device_class: Some(DeviceClass::DataSize),
-                unit: Some("B".to_string()),
-                reporter: Some(SensorReporterType::Docker(DockerSensorReporter {
-                    stat: DockerSensorReporterStat::ImagesSize,
-                    docker: Arc::new(self.docker.clone()),
-                })),
-                ..Default::default()
-            },
-            Sensor {
-                id: "docker_volumes_count".to_string(),
-                name: "Docker Volumes".to_string(),
-                icon: Some("docker".to_string()),
-                reporter: Some(SensorReporterType::Docker(DockerSensorReporter {
-                    stat: DockerSensorReporterStat::VolumesCount,
-                    docker: Arc::new(self.docker.clone()),
-                })),
-                ..Default::default()
-            },
         ];
-        sensors.append(&mut containters);
-        if let Some(sensor_config) = self.sensor_config.as_ref() {
-            for sensor in sensors.iter_mut() {
-                // apply star overrides then named overrides
-                let mut star_name = sensor.id.split('_');
-                let star_id = format!(
-                    "{}_*_{}",
-                    star_name.nth(0).unwrap_or(""),
-                    star_name.last().unwrap_or("")
-                );
-                if let Some(Sensors::SensorOverride(update)) =
-                    sensor_config.sensors.get(star_id.as_str())
-                {
-                    sensor.merge(update);
-                }
 
-                if let Some(Sensors::SensorOverride(update)) =
-                    sensor_config.sensors.get(sensor.id.as_str())
-                {
-                    sensor.merge(update);
-                }
-            }
-            for sensor in sensor_config.sensors.values() {
-                if let Sensors::Command(command) = sensor {
-                    sensors.push(command.into());
-                }
-            }
+        sensors.append(&mut containters);
+        sensors.append(&mut docker);
+
+        if let Some(sensor_config) = self.sensor_config.as_ref() {
+            self.apply_sensor_overrides(&mut sensors, sensor_config);
         }
         sensors
+    }
+
+    fn apply_sensor_overrides(&self, sensors: &mut Vec<Sensor>, sensor_config: &Config) {
+        for sensor in sensors.iter_mut() {
+            // apply star overrides then named overrides
+            let mut star_name = sensor.id.split('_');
+            let star_id = format!(
+                "{}_*_{}",
+                star_name.nth(0).unwrap_or(""),
+                star_name.last().unwrap_or("")
+            );
+            if let Some(Sensors::SensorOverride(update)) =
+                sensor_config.sensors.get(star_id.as_str())
+            {
+                sensor.merge(update);
+            }
+
+            if let Some(Sensors::SensorOverride(update)) =
+                sensor_config.sensors.get(sensor.id.as_str())
+            {
+                sensor.merge(update);
+            }
+        }
     }
 
     #[instrument(level = "trace", skip(self))]
@@ -365,78 +309,6 @@ impl UnraidStats {
         }
 
         Ok(())
-    }
-
-    pub async fn containers(&self) -> Result<Vec<ContainerSummary>> {
-        let mut filters = HashMap::new();
-        filters.insert("status".into(), vec!["running".into()]);
-        let containers = self
-            .docker
-            .list_containers(Some(ListContainersOptions {
-                all: true,
-                filters: Some(filters),
-                ..Default::default()
-            }))
-            .await?;
-        Ok(containers)
-    }
-
-    fn container_sensors(&self, container: ContainerSummary) -> Vec<Sensor> {
-        let container = Arc::new(container);
-        let container_name = container
-            .names
-            .as_ref()
-            .and_then(|names| names.first())
-            .map(|n| n.trim_start_matches('/'))
-            .unwrap_or("unknown");
-        let stats_stash = Arc::new(Mutex::new(None));
-        vec![
-            Sensor {
-                id: format!("dockercontainer_{}_cpu", container_name),
-                name: format!("{} Docker {} CPU", self.device_name, container_name),
-                icon: Some("mdi:cpu-64-bit".to_string()),
-                unit: Some("%".to_string()),
-                reporter: Some(SensorReporterType::DockerContainer(
-                    DockerContainerSensorReporter {
-                        container: container.clone(),
-                        stats_stash: stats_stash.clone(),
-                        stat: DockerContainerSensorReporterStat::CpuUsage,
-                        docker: Arc::new(self.docker.clone()),
-                    },
-                )),
-                ..Default::default()
-            },
-            Sensor {
-                id: format!("dockercontainer_{}_memory", container_name),
-                name: format!("{} Docker {} Memory", self.device_name, container_name),
-                icon: Some("mdi:memory".to_string()),
-                unit: Some("B".to_string()),
-                device_class: Some(DeviceClass::DataSize),
-                reporter: Some(SensorReporterType::DockerContainer(
-                    DockerContainerSensorReporter {
-                        container: container.clone(),
-                        stats_stash: stats_stash.clone(),
-                        stat: DockerContainerSensorReporterStat::MemoryUsage,
-                        docker: Arc::new(self.docker.clone()),
-                    },
-                )),
-                ..Default::default()
-            },
-            Sensor {
-                id: format!("dockercontainer_{}_uptime", container_name),
-                name: format!("{} Docker {} Uptime", self.device_name, container_name),
-                icon: Some("mdi:docker".to_string()),
-                reporter: Some(SensorReporterType::DockerContainer(
-                    DockerContainerSensorReporter {
-                        container: container.clone(),
-                        stats_stash: stats_stash.clone(),
-                        stat: DockerContainerSensorReporterStat::Status,
-                        docker: Arc::new(self.docker.clone()),
-                    },
-                )),
-                ..Default::default()
-            },
-        ]
     }
 
     #[instrument(level = "trace", skip(self, client))]

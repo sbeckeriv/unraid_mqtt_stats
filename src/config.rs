@@ -176,25 +176,8 @@ where
 
     Ok(sensors)
 }
-/*
-#[derive(Serialize, Default, Deserialize)]
-pub struct Config {
-    pub sensors: Vec<Sensor>,
-}
-#[derive(Serialize, Default, Deserialize)]
-pub struct Sensor {
-    pub id: String,
-    pub name: String,
-    pub unit: Option<String>,
-    pub device_class: Option<DeviceClass>,
-    pub icon: Option<String>,
-    pub disabled: bool,
-    #[serde(skip, default)]
-    pub reporter: Option<SensorReporterType>,
-}
- */
+
 impl Sensor {
-    // merge from config file
     pub fn merge(&mut self, other: &SensorConfig) {
         if self.id != other.id && !other.id.contains("_*_") {
             return;
@@ -339,31 +322,23 @@ impl DockerSensorReporter {
             docker: &Docker,
             filters: HashMap<String, Vec<String>>,
         ) -> Option<String> {
-            let containers = docker
+            docker
                 .list_containers(Some(ListContainersOptions {
                     all: true,
                     filters: Some(filters),
                     ..Default::default()
                 }))
-                .await;
-            if let Ok(containers) = containers {
-                Some(containers.len().to_string())
-            } else {
-                None
-            }
+                .await
+                .map(|containers| containers.len().to_string())
+                .ok()
         }
         match self.stat {
-            DockerSensorReporterStat::ImagesCount => {
-                let images = self
-                    .docker
-                    .list_images(Some(ListImagesOptions::default()))
-                    .await;
-                if let Ok(images) = images {
-                    Some(images.len().to_string())
-                } else {
-                    None
-                }
-            }
+            DockerSensorReporterStat::ImagesCount => self
+                .docker
+                .list_images(Some(ListImagesOptions::default()))
+                .await
+                .map(|images| images.len().to_string())
+                .ok(),
             DockerSensorReporterStat::ImagesSize => {
                 let images = self
                     .docker
@@ -379,16 +354,10 @@ impl DockerSensorReporter {
             DockerSensorReporterStat::VolumesCount => {
                 let filter = ListVolumesOptions { filters: None };
                 let volumes = self.docker.list_volumes(Some(filter)).await;
-                if let Ok(volumes) = volumes {
-                    let volume_count = volumes
-                        .volumes
-                        .as_ref()
-                        .map(|v| v.len())
-                        .unwrap_or_default();
-                    Some(volume_count.to_string())
-                } else {
-                    None
-                }
+                volumes
+                    .and_then(|volumes| Ok(volumes.volumes.as_ref().map(|v| v.len().to_string())))
+                    .ok()
+                    .flatten()
             }
             DockerSensorReporterStat::RunningCount => {
                 let mut filters = HashMap::new();
@@ -440,20 +409,13 @@ impl DockerContainerSensorReporter {
                     let cpu_percent = calculate_cpu_percent(&stats);
                     Some(format!("{}", cpu_percent))
                 }
-                DockerContainerSensorReporterStat::MemoryUsage => {
-                    let memory_usage = stats
-                        .memory_stats
-                        .map(|m| m.usage)
-                        .flatten()
-                        .unwrap_or_default();
-                    Some(format!("{}", memory_usage))
-                }
+                DockerContainerSensorReporterStat::MemoryUsage => stats
+                    .memory_stats
+                    .map(|m| m.usage)
+                    .flatten()
+                    .map(|memory_usage| format!("{}", memory_usage)),
                 DockerContainerSensorReporterStat::Status => {
-                    if let Some(status) = &self.container.status {
-                        Some(status.clone())
-                    } else {
-                        None
-                    }
+                    self.container.status.as_ref().map(|status| status.clone())
                 }
             }
         } else {
@@ -525,7 +487,7 @@ pub enum DeviceClass {
 }
 
 // https://github.com/home-assistant/core/blob/dev/homeassistant/const.py#L619
-
+// mimic https://github.com/docker/cli/blob/4debf411d1e6efbd9ce65e4250718e9c529a6525/cli/command/container/stats_helpers.go#L166
 pub fn calculate_cpu_percent(stats: &ContainerStatsResponse) -> f64 {
     let cpu_stats = &stats.cpu_stats;
     let precpu_stats = &stats.precpu_stats;
